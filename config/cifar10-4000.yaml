@@ -1,0 +1,42 @@
+task: 'cifar10-4000'
+# CUDA设置
+device: 'cuda:0'
+num_workers: 4
+
+# 数据集设置
+dataset: cifar10
+num_labeled: 4000
+data_root: data
+
+# 模型架构
+arch: wideresnet
+dropout: 0.0
+
+# 训练参数
+num_epochs: 200
+batch_size: 64
+learning_rate: 0.03
+weight_decay: 5e-4
+warmup_steps: 100
+min_learning_rate: 1e-5
+
+
+# EMA设置
+# use_ema: true
+# ema_decay: 0.999
+
+# 半监督学习参数
+mu: 7  # 无标签批次大小系数
+lambda_u: 1  # 无标签损失系数
+temperature: 1  # 伪标签温度
+threshold: 0.95  # 伪标签阈值
+
+# 输出和检查点
+save_model_freq: 100
+model_ckpt: null
+optim_ckpt: null
+
+# 其他设置
+seed: 3407 # https://arxiv.org/abs/2109.08203
+local_rank: -1  # 分布式训练
+no_progress: false  # 进度条显示

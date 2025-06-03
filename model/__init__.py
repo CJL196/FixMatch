@@ -1,0 +1,1 @@
+from .wideresnet import build_wideresnet
