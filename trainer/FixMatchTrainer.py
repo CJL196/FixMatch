@@ -105,7 +105,7 @@ class FixMatchTrainer:
         min_lr = min_lr if min_lr is not None else self.config.min_learning_rate
         
         # 计算总步数用于余弦衰减
-        total_steps = self.config.num_epochs * ((len(self.train_labeled_dataset) + len(self.train_unlabeled_dataset)) // self.config.batch_size)
+        total_steps = self.config.num_epochs * (len(self.train_labeled_dataset) // self.config.batch_size)
         # 创建余弦退火调度器，T_max设置为总步数减去预热步数
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=total_steps - self.warmup_steps, eta_min=min_lr)
     
