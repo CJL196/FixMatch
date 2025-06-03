@@ -18,6 +18,10 @@ class FixMatchTrainer:
         from model import build_wideresnet
         model = build_wideresnet(config.model_depth, config.model_width, config.dropout, config.num_classes)
         
+        if config.use_ema:
+            from model.ema import ModelEMA
+            self.ema = ModelEMA(device, model, config.ema_decay)
+        
         self.initialize_model(model)
         
         # 初始化优化器
@@ -28,9 +32,6 @@ class FixMatchTrainer:
         
         # 设置混合精度训练和日志
         self.setup()
-        
-        # loss
-        self.ce = nn.CrossEntropyLoss(ignore_index=-100)
 
     def initialize(self, config, device, tensorboard_writer, train_labeled_dataset, train_unlabeled_dataset, test_dataset):
         self.config = config
@@ -57,7 +58,11 @@ class FixMatchTrainer:
         # 加载预训练模型
         if self.config.model_ckpt is not None:
             print(f'load pretrained model from {self.config.model_ckpt}')
-            self.model.load_state_dict(torch.load(self.config.model_ckpt, map_location=self.device), strict=False)
+            checkpoint = torch.load(self.config.model_ckpt, map_location=self.device)
+            if self.config.use_ema:
+                self.ema.ema.load_state_dict(checkpoint['ema'])
+            
+            self.model.load_state_dict(checkpoint['model'], strict=False)
     
     def initialize_optimizer(self, lr=None, weight_decay=None):
         """初始化优化器"""
@@ -66,7 +71,15 @@ class FixMatchTrainer:
         if weight_decay is None:
             weight_decay = self.config.weight_decay
             
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        no_decay = ['bias', 'bn']
+        grouped_parameters = [
+            {'params': [p for n, p in self.model.named_parameters() if not any(
+                nd in n for nd in no_decay)], 'weight_decay': weight_decay},
+            {'params': [p for n, p in self.model.named_parameters() if any(
+                nd in n for nd in no_decay)], 'weight_decay': 0.0}
+        ]
+        self.optimizer = torch.optim.SGD(grouped_parameters, lr=lr,
+                            momentum=0.9, nesterov=True)
         
         # 加载优化器状态
         if self.config.optim_ckpt is not None:
@@ -202,7 +215,13 @@ class FixMatchTrainer:
     def save_checkpoint(self, epoch):
         """保存模型和优化器状态"""
         if (epoch + 1) % self.config.save_model_freq == 0:
-            torch.save(self.model.state_dict(), self.config.model_dir + "/epoch-" + str(epoch + 1) + ".model")
+            if self.config.use_ema:
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'ema': self.ema.ema.state_dict()
+                }, self.config.model_dir + "/epoch-" + str(epoch + 1) + ".model")
+            else:
+                torch.save({'model': self.model.state_dict()}, self.config.model_dir + "/epoch-" + str(epoch + 1) + ".model")
             # 保存优化器状态和训练进度信息
             checkpoint = {
                 'optimizer': self.optimizer.state_dict(),
@@ -211,14 +230,15 @@ class FixMatchTrainer:
             }
             torch.save(checkpoint, self.config.model_dir + "/epoch-" + str(epoch + 1) + ".opt")
     
-    def inference(self, labeled_batch, unlabeled_batch) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    def inference(self, labeled_batch, unlabeled_batch, model) -> Tuple[torch.Tensor, Dict[str, Any]]:
         metrics = {}
         # labeled
         labeled_img, labeled_label = labeled_batch
         labeled_img = labeled_img.to(self.device)
         labeled_label = labeled_label.to(self.device)
         
-        labeled_logits = self.model(labeled_img)
+        with self.ctx:
+            labeled_logits = model(labeled_img)
         Lx = F.cross_entropy(labeled_logits, labeled_label, reduction='mean')
         metrics['loss_Lx'] = Lx.item()
         metrics['labeled_logits'] = labeled_logits.detach().cpu()
@@ -230,9 +250,10 @@ class FixMatchTrainer:
             (img_weak, img_strong), _ = unlabeled_batch
             img_weak = img_weak.to(self.device)
             img_strong = img_strong.to(self.device)
-            logits_weak = self.model(img_weak)
-            logits_strong = self.model(img_strong)
-            pseudo_label = torch.softmax(logits_strong.detach()/self.config.temperature, dim=-1)
+            with self.ctx:
+                logits_weak = model(img_weak)
+                logits_strong = model(img_strong)
+            pseudo_label = torch.softmax(logits_weak.detach()/self.config.temperature, dim=-1)
             max_probs, max_idx = pseudo_label.max(dim=-1)
             mask = max_probs.ge(self.config.threshold).float()
             Lu = F.cross_entropy(logits_strong, max_idx, reduction='none')
@@ -272,7 +293,11 @@ class FixMatchTrainer:
             unlabeled_iter = iter(train_unlabeled_loader)
             
             for labeled_batch in train_labeled_loader:
-                unlabeled_batch = next(unlabeled_iter)
+                try:
+                    unlabeled_batch = next(unlabeled_iter)
+                except StopIteration:
+                    unlabeled_iter = iter(train_unlabeled_loader)
+                    unlabeled_batch = next(unlabeled_iter)
                 
                 self.optimizer.zero_grad()
                 
@@ -280,7 +305,7 @@ class FixMatchTrainer:
                 self.adjust_learning_rate()
                 
                 # 推理和计算损失
-                loss, batch_metrics = self.inference(labeled_batch, unlabeled_batch)
+                loss, batch_metrics = self.inference(labeled_batch, unlabeled_batch, self.model)
                 epoch_loss += loss.item()
                 
                 # 更新指标
@@ -288,6 +313,9 @@ class FixMatchTrainer:
                 self.evaluate_metrics_step(batch_metrics, prefix='train', step=self.global_step)
                 
                 self.backward(loss)
+                
+                if self.config.use_ema:
+                    self.ema.update(self.model)
 
                 # 更新全局步数
                 self.global_step += 1
@@ -312,9 +340,14 @@ class FixMatchTrainer:
             test_loss = 0
             self.initialize_metrics()
             
+            if self.config.use_ema:
+                test_model = self.ema.ema
+            else:
+                test_model = self.model
+            
             with torch.no_grad():
                 for labeled_batch in test_loader:
-                    loss, batch_metrics = self.inference(labeled_batch, None)
+                    loss, batch_metrics = self.inference(labeled_batch, None, test_model)
                     test_loss += loss.item()
                     self.update_metrics(batch_metrics)
             
