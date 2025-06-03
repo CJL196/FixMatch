@@ -2,7 +2,7 @@ import argparse
 from utils import *
 from torch.utils.tensorboard import SummaryWriter
 
-def train_cifar10_4000(config):
+def train_cifar10(config):
     from dataset import get_cifar10
     train_labeled_dataset, train_unlabeled_dataset, test_dataset, train_labeled_loader, train_unlabeled_loader, test_loader = get_cifar10(config, config.data_root)
     device = get_device(config.device)
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     init_seed(config.seed)
     update_config(config)
     
-    if config.task == 'cifar10-4000':
-        train_cifar10_4000(config)
+    if config.task == 'cifar10':
+        train_cifar10(config)
     else:
         raise ValueError(f"Unknown config file: {config_file_name}")

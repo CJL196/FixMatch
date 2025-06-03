@@ -62,7 +62,12 @@ def x_u_split(config, labels):
         idx = np.random.choice(idx, label_per_class, False)
         labeled_idx.extend(idx)
     labeled_idx = np.array(labeled_idx)
-    assert len(labeled_idx) == config.num_labeled
+    
+    if config.epoch_labeled_num is not None and config.num_labeled < config.epoch_labeled_num:
+        expand_ratio = config.epoch_labeled_num // config.num_labeled
+        labeled_idx = np.hstack([labeled_idx for _ in range(expand_ratio)])
+    
+    np.random.shuffle(labeled_idx)
 
     return labeled_idx, unlabeled_idx
 
