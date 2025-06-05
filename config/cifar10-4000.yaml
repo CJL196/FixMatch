@@ -14,12 +14,12 @@ arch: wideresnet
 dropout: 0.0
 
 # 训练参数
-num_epochs: 2000
+num_epochs: 4096
 batch_size: 64
-learning_rate: 0.05
-weight_decay: 1e-3
+learning_rate: 0.03
+weight_decay: 5e-4
 warmup_steps: 100
-min_learning_rate: 1e-5
+min_learning_rate: 3e-4
 
 
 # EMA设置
@@ -33,7 +33,7 @@ temperature: 1  # 伪标签温度
 threshold: 0.95  # 伪标签阈值
 
 # 输出和检查点
-save_model_freq: 1000
+save_model_freq: 4096
 model_ckpt: null
 optim_ckpt: null
 
